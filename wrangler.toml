@@ -1,0 +1,42 @@
+name = "siemen"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "siemen-vectors"   # wrangler vectorize create siemen-vectors --dimensions=768 --metric=cosine
+
+[[d1_databases]]
+binding = "DB"
+database_name = "siemen-db"
+database_id = "YOUR_D1_DATABASE_ID"  # wrangler d1 create siemen-db
+
+[[kv_namespaces]]
+binding = "SC_KV"
+id = "YOUR_SC_KV_ID"  # wrangler kv namespace create siemen-sc-cache
+
+[[kv_namespaces]]
+binding = "KV"
+id = "YOUR_KV_ID"     # wrangler kv namespace create siemen-kv
+
+[ai]
+binding = "AI"
+
+# Rate limiting — change namespace_id if 1006 is already in use on your account
+[[unsafe.bindings]]
+name = "SIEMEN_RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1006"
+simple = { limit = 60, period = 60 }
+
+[vars]
+LLM_GATEWAY_URL = "https://your-llm-gateway.workers.dev/v1/chat/completions"
+OPENROUTER_EMBED_URL = "https://openrouter.ai/api/v1/embeddings"
+OLLAMA_EMBED_URL = "http://localhost:11434/api/embeddings"
+HTTP_REFERER = "https://your-domain.com"
+X_TITLE = "SIEMen Security Data Layer"
+
+# Required secrets (set via `wrangler secret put <NAME>`):
+# SIEMEN_API_KEY     — Bearer auth key for all /v1/* and /mcp routes
+# OPENROUTER_API_KEY — embedding fallback (Workers AI is primary)
+# LLM_GATEWAY_KEY    — forwarded as Bearer to your LLM gateway on semantic cache miss

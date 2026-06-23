@@ -1,0 +1,17 @@
+{
+  "name": "siemen",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Security-focused AI data layer on Cloudflare Workers",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240909.0",
+    "hono": "^4.4.0",
+    "typescript": "^5.4.5",
+    "wrangler": "^3.63.0"
+  }
+}
