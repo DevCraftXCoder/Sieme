@@ -174,11 +174,14 @@ export async function handleSemanticTriage(body: unknown, env: Env): Promise<Res
   // Step 5: MISS — call LLM via llm-gateway
   let analysis: string;
   try {
-    const llmResp = await fetch(env.LLM_GATEWAY_URL, {
+    const llmResp = await env.LLM_WORKER.fetch(new Request(env.LLM_GATEWAY_URL, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${env.LLM_GATEWAY_KEY}`,
         "Content-Type": "application/json",
+        "X-Feature": "siemen-triage",
+        "HTTP-Referer": env.HTTP_REFERER ?? "https://frxncois.com",
+        "X-Title": env.X_TITLE ?? "SIEMen",
       },
       body: JSON.stringify({
         model,
@@ -191,7 +194,7 @@ export async function handleSemanticTriage(body: unknown, env: Env): Promise<Res
         ],
         max_tokens: 512,
       }),
-    });
+    }));
 
     if (!llmResp.ok) {
       const errText = await llmResp.text();

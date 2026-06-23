@@ -11,6 +11,8 @@ export interface Env {
   AI: Ai;
   // CF Rate Limiting — namespace 1006
   SIEMEN_RATE_LIMITER: RateLimit;
+  // Service binding to llm worker (Worker-to-Worker, bypasses workers.dev restriction)
+  LLM_WORKER: Fetcher;
 
   // Secrets (set via wrangler secret put)
   SIEMEN_API_KEY: string;
