@@ -1,4 +1,4 @@
-# Siemee
+# Sieme
 
 Security-focused AI data layer on Cloudflare Workers. Purpose-built for AI security agents — combines fast KV scratch cache, semantic vector search over findings, per-engagement agent memory, and a similarity-based LLM triage cache. Exposes both a REST API and a built-in MCP server so Claude/AI agents can read, write, and search security data directly.
 
@@ -80,21 +80,21 @@ Apply migrations in order with `wrangler d1 execute siemen-db --remote --file mi
 
 ```bash
 # 1. Create infrastructure
-wrangler vectorize create siemee-vectors --dimensions=768 --metric=cosine
-wrangler d1 create siemee-db
-wrangler kv namespace create siemee-sc-cache
-wrangler kv namespace create siemee-kv
+wrangler vectorize create sieme-vectors --dimensions=768 --metric=cosine
+wrangler d1 create sieme-db
+wrangler kv namespace create sieme-sc-cache
+wrangler kv namespace create sieme-kv
 
 # 2. Update wrangler.toml with the returned IDs
 
 # 3. Apply D1 migrations (run in order)
-wrangler d1 execute siemee-db --remote --file migrations/migration-001-engagements.sql
-wrangler d1 execute siemee-db --remote --file migrations/migration-002-memory.sql
-wrangler d1 execute siemee-db --remote --file migrations/migration-003-findings.sql
-wrangler d1 execute siemee-db --remote --file migrations/migration-004-semantic-cache-log.sql
+wrangler d1 execute sieme-db --remote --file migrations/migration-001-engagements.sql
+wrangler d1 execute sieme-db --remote --file migrations/migration-002-memory.sql
+wrangler d1 execute sieme-db --remote --file migrations/migration-003-findings.sql
+wrangler d1 execute sieme-db --remote --file migrations/migration-004-semantic-cache-log.sql
 
 # 4. Set secrets
-wrangler secret put SIEMEE_API_KEY
+wrangler secret put SIEME_API_KEY
 wrangler secret put OPENROUTER_API_KEY
 wrangler secret put LLM_GATEWAY_KEY
 
@@ -109,10 +109,10 @@ Add to your Claude Desktop / Claude Code MCP config:
 ```json
 {
   "mcpServers": {
-    "siemee": {
+    "sieme": {
       "url": "https://your-worker.workers.dev/mcp",
       "headers": {
-        "Authorization": "Bearer ${SIEMEE_API_KEY}"
+        "Authorization": "Bearer ${SIEME_API_KEY}"
       },
       "alwaysAllow": [
         "engagement_open",
@@ -126,7 +126,7 @@ Add to your Claude Desktop / Claude Code MCP config:
 }
 ```
 
-Set `SIEMEE_API_KEY` in your shell environment. Write tools (`finding_store`, `sec_cache_set`, `engagement_remember`, `semantic_triage`) require explicit approval by default.
+Set `SIEME_API_KEY` in your shell environment. Write tools (`finding_store`, `sec_cache_set`, `engagement_remember`, `semantic_triage`) require explicit approval by default.
 
 ## Security
 
