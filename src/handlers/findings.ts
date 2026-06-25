@@ -312,6 +312,9 @@ export async function handleFindingBatch(body: unknown, env: Env): Promise<Respo
     return Response.json({ error: "VALIDATION_ERROR", message: "findings array required" }, { status: 400 });
   }
 
+  // Top-level engagement_id is inherited by each finding if not overridden per-item
+  const topLevelEngagementId = typeof b["engagement_id"] === "string" ? b["engagement_id"] : null;
+
   const items = b["findings"] as unknown[];
   if (items.length === 0) {
     return Response.json({ stored: 0, duplicates: 0, errors: [] });
@@ -328,8 +331,16 @@ export async function handleFindingBatch(body: unknown, env: Env): Promise<Respo
   const errors: Array<{ index: number; error: string }> = [];
 
   for (let i = 0; i < items.length; i++) {
+    // Inherit top-level engagement_id if the individual finding omits it
+    const item =
+      topLevelEngagementId &&
+      items[i] &&
+      typeof items[i] === "object" &&
+      !(items[i] as Record<string, unknown>)["engagement_id"]
+        ? { ...(items[i] as Record<string, unknown>), engagement_id: topLevelEngagementId }
+        : items[i];
     try {
-      const resp = await handleFindingStore(items[i], env);
+      const resp = await handleFindingStore(item, env);
       if (resp.status === 201) {
         stored++;
       } else if (resp.status === 409) {
