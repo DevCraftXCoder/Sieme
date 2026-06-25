@@ -16,6 +16,24 @@ Security AI data layer on Cloudflare Workers. Purpose-built for AI security agen
 | Auth | Web Crypto SHA-256 | Timing-safe Bearer token verification |
 | MCP | JSON-RPC 2.0 | 11 tools on `POST /mcp` — same handlers as REST |
 
+## Pipeline
+
+```
+SIC scan output (JSON)
+  └─▶ sic_siemen_bridge.py --scan <file> --engagement-name "Client"
+        ├─▶ POST /v1/engagements       — create / upsert engagement
+        └─▶ POST /v1/findings/batch    — transform + ingest findings (100/batch)
+
+SIEMen data layer
+  ├─▶ Vectorize        — BGE-768 embeddings for semantic search
+  ├─▶ D1              — findings, memory, cache log
+  └─▶ GET /v1/engagements/:id/report  — severity_rollup, status_rollup, memories, cache_stats
+
+SOC report generation
+  └─▶ generate_report_from_engagement (soc-reporter-mcp)
+        └─▶ maps findings → P0/P1/P2/P3 buckets → SOC handoff HTML
+```
+
 ## What It Does
 
 ### Fast KV Scratch Cache
@@ -89,6 +107,48 @@ Apply migrations in order with `wrangler d1 execute siemen-db --remote --file mi
 - **memory** — agent memory per engagement (content, tags, vector_id, session_id)
 - **findings** — security findings/CVEs/controls (kind, title, body, severity, asset, external_id, vector_id, tags, finding_status, deleted_at)
 - **semantic_cache_log** — cache outcome log (prompt_hash, outcome, similarity, model, tokens, created_at)
+
+## SIC Integration
+
+`sic_siemen_bridge.py` — the official SIC → SIEMen bridge. Transforms SIC scan finding dicts and batch-POSTs them to SIEMen with full field mapping.
+
+**Field mapping (SIC → SIEMen):**
+
+| SIEMen field | SIC source fields |
+|---|---|
+| `title` | `name` / `vulnerabilityName` / `Title` / `template-id` / `checkID` |
+| `body` | `description` / `info.description` / `details` (capped 2000 chars) |
+| `severity` | `severity` / `info.severity` → remapped (`none`/`unknown` → `info`) |
+| `kind` | `cve` if CVE-YYYY-NNNNN in title, `control` if Checkov, else `finding` |
+| `external_id` | CVE ID extracted from title/template-id (enables dedup) |
+| `asset` | `host` / `url` / `target` / `affected_component` / `matched-at` |
+| `tags` | `[scanner, category]` (up to 5, deduped) |
+
+**CLI:**
+
+```bash
+python sic_siemen_bridge.py \
+    --scan ./_runs/scan-20260101.json \
+    --engagement-name "Example Corp Pentest" \
+    [--client "Example Corp"] \
+    [--engagement-id "existing-id"] \
+    [--url https://siemen.frxncois.workers.dev] \
+    [--dry-run]
+```
+
+**Library:**
+
+```python
+from sic_siemen_bridge import SIEMenClient
+
+client = SIEMenClient()  # reads SIEMEN_URL + SIEMEN_API_KEY from env
+eid = client.open_engagement("My Pentest", client="Acme")
+result = client.push_findings(eid, sic_findings)
+# { stored, duplicates, errors, total_pushed }
+
+report = client.get_report(eid)
+# { findings, severity_rollup, status_rollup, memories, cache_stats }
+```
 
 ## Deploy
 
