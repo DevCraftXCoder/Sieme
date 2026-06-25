@@ -1,6 +1,6 @@
-# Sieme
+# SIEMen
 
-Security-focused AI data layer on Cloudflare Workers. Purpose-built for AI security agents — combines fast KV scratch cache, semantic vector search over findings, per-engagement agent memory, and a similarity-based LLM triage cache. Exposes both a REST API and a built-in MCP server so Claude/AI agents can read, write, and search security data directly.
+Security AI data layer on Cloudflare Workers. Purpose-built for AI security agents — combines fast KV scratch cache, semantic vector search over findings, per-engagement agent memory, and a similarity-based LLM triage cache. Exposes both a REST API and a built-in MCP server so Claude/AI agents can read, write, and search security data directly.
 
 ## Stack
 
@@ -14,7 +14,7 @@ Security-focused AI data layer on Cloudflare Workers. Purpose-built for AI secur
 | Embeddings | Workers AI (BGE-768) | Primary — OpenRouter fallback on failure |
 | Rate Limiting | Workers Rate Limiting API | 60 req/min per caller (cross-isolate, durable) |
 | Auth | Web Crypto SHA-256 | Timing-safe Bearer token verification |
-| MCP | JSON-RPC 2.0 | 9 tools on `POST /mcp` — same handlers as REST |
+| MCP | JSON-RPC 2.0 | 11 tools on `POST /mcp` — same handlers as REST |
 
 ## What It Does
 
@@ -35,11 +35,19 @@ Agents store notes with `engagement_remember` and recall them by recency or vect
 
 Cuts LLM spend significantly when agents analyze structurally similar findings across engagements.
 
+### Finding Lifecycle
+Findings transition through status states (`open` → `accepted` → `remediated` → `false_positive`) via `PATCH /v1/findings/:id`. Batch ingest via `POST /v1/findings/batch` for pipeline ingestion from scanners.
+
+### Engagement Reports
+`GET /v1/engagements/:id/report` exports all findings with cursor pagination, severity rollup, status rollup, memories, and cache stats in a single response — ready for SOC pipeline consumption.
+
 ## MCP Tools
 
 | Tool | Description |
 |------|-------------|
 | `engagement_open` | Create or register a new pentest engagement |
+| `engagement_list` | List all engagements (non-deleted, newest first) |
+| `engagement_report` | Full export: findings, rollups, memories, cache stats |
 | `sec_cache_get` | Read from the fast KV scratch store |
 | `sec_cache_set` | Write to the fast KV scratch store (optional TTL) |
 | `finding_store` | Embed and store a finding, CVE, or control |
@@ -56,16 +64,22 @@ All `/v1/*` routes require `Authorization: Bearer <SIEMEN_API_KEY>`.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check (unauthenticated) |
+| GET | `/v1/engagements` | List all engagements (non-deleted, newest first) |
 | POST | `/v1/engagements` | Create/upsert an engagement |
+| GET | `/v1/engagements/:id/report` | Full export: findings, rollups, memories, cache stats |
+| PATCH | `/v1/engagements/:id` | Update engagement status/name/client |
 | POST | `/v1/findings` | Embed + store a finding/CVE/control |
+| POST | `/v1/findings/batch` | Batch ingest (up to 100 findings per request) |
 | POST | `/v1/findings/search` | Semantic search over findings |
-| GET | `/v1/stats?engagement_id=` | Cache hit/miss stats |
+| PATCH | `/v1/findings/:id` | Update finding severity/body/tags/status |
+| DELETE | `/v1/findings/:id` | Soft-delete a finding |
+| GET | `/v1/stats?engagement_id=` | Cache hit/miss stats + severity rollup |
 | GET | `/v1/kv/:ns/:key` | KV scratch read |
 | PUT | `/v1/kv/:ns/:key` | KV scratch write |
 | POST | `/v1/memory` | Store agent memory |
 | GET | `/v1/memory?engagement_id=` | Recall agent memories |
 | POST | `/v1/triage` | Semantic triage with LLM cache |
-| POST | `/mcp` | MCP JSON-RPC endpoint (all 9 tools) |
+| POST | `/mcp` | MCP JSON-RPC endpoint (all 11 tools) |
 
 ## D1 Schema
 
@@ -73,28 +87,30 @@ Apply migrations in order with `wrangler d1 execute siemen-db --remote --file mi
 
 - **engagements** — engagement registry (id, name, client, status, timestamps)
 - **memory** — agent memory per engagement (content, tags, vector_id, session_id)
-- **findings** — security findings/CVEs/controls (kind, title, body, severity, asset, external_id, vector_id)
+- **findings** — security findings/CVEs/controls (kind, title, body, severity, asset, external_id, vector_id, tags, finding_status, deleted_at)
 - **semantic_cache_log** — cache outcome log (prompt_hash, outcome, similarity, model, tokens, created_at)
 
 ## Deploy
 
 ```bash
 # 1. Create infrastructure
-wrangler vectorize create sieme-vectors --dimensions=768 --metric=cosine
-wrangler d1 create sieme-db
-wrangler kv namespace create sieme-sc-cache
-wrangler kv namespace create sieme-kv
+wrangler vectorize create siemen-vectors --dimensions=768 --metric=cosine
+wrangler d1 create siemen-db
+wrangler kv namespace create siemen-sc-cache
+wrangler kv namespace create siemen-kv
 
 # 2. Update wrangler.toml with the returned IDs
 
 # 3. Apply D1 migrations (run in order)
-wrangler d1 execute sieme-db --remote --file migrations/migration-001-engagements.sql
-wrangler d1 execute sieme-db --remote --file migrations/migration-002-memory.sql
-wrangler d1 execute sieme-db --remote --file migrations/migration-003-findings.sql
-wrangler d1 execute sieme-db --remote --file migrations/migration-004-semantic-cache-log.sql
+wrangler d1 execute siemen-db --remote --file migrations/migration-001-engagements.sql
+wrangler d1 execute siemen-db --remote --file migrations/migration-002-memory.sql
+wrangler d1 execute siemen-db --remote --file migrations/migration-003-findings.sql
+wrangler d1 execute siemen-db --remote --file migrations/migration-004-semantic-cache-log.sql
+wrangler d1 execute siemen-db --remote --file migrations/migration-005-roi.sql
+wrangler d1 execute siemen-db --remote --file migrations/migration-006-finding-status.sql
 
 # 4. Set secrets
-wrangler secret put SIEME_API_KEY
+wrangler secret put SIEMEN_API_KEY
 wrangler secret put OPENROUTER_API_KEY
 wrangler secret put LLM_GATEWAY_KEY
 
@@ -109,13 +125,14 @@ Add to your Claude Desktop / Claude Code MCP config:
 ```json
 {
   "mcpServers": {
-    "sieme": {
+    "siemen": {
       "url": "https://your-worker.workers.dev/mcp",
       "headers": {
-        "Authorization": "Bearer ${SIEME_API_KEY}"
+        "Authorization": "Bearer ${SIEMEN_API_KEY}"
       },
       "alwaysAllow": [
         "engagement_open",
+        "engagement_list",
         "sec_cache_get",
         "finding_search",
         "engagement_recall",
@@ -126,7 +143,7 @@ Add to your Claude Desktop / Claude Code MCP config:
 }
 ```
 
-Set `SIEME_API_KEY` in your shell environment. Write tools (`finding_store`, `sec_cache_set`, `engagement_remember`, `semantic_triage`) require explicit approval by default.
+Set `SIEMEN_API_KEY` in your shell environment. Write tools (`finding_store`, `finding_store_batch`, `sec_cache_set`, `engagement_remember`, `semantic_triage`) require explicit approval by default.
 
 ## Security
 

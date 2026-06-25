@@ -14,8 +14,21 @@ kvRoutes.get("/v1/kv/:ns/:key", async (c) => {
   return handleKvGet(ns, key, c.env);
 });
 
-// POST /v1/kv/:ns/:key — write scratch value
+// POST /v1/kv/:ns/:key — write scratch value (legacy method)
 kvRoutes.post("/v1/kv/:ns/:key", async (c) => {
+  const ns = c.req.param("ns");
+  const key = c.req.param("key");
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "VALIDATION_ERROR", message: "Invalid JSON body" }, 400);
+  }
+  return handleKvSet(ns, key, body, c.env, c);
+});
+
+// PUT /v1/kv/:ns/:key — write scratch value (spec-correct method)
+kvRoutes.put("/v1/kv/:ns/:key", async (c) => {
   const ns = c.req.param("ns");
   const key = c.req.param("key");
   let body: unknown;

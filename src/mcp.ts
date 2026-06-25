@@ -8,10 +8,11 @@
 // Mounted at POST /mcp in src/index.ts (behind verifyAuth middleware).
 
 import type { Context } from "hono";
-import type { Env, Variables } from "./types.js";
+import type { Env, Variables, EngagementRecord } from "./types.js";
 import { handleKvGet, handleKvSet } from "./handlers/kv.js";
 import {
   handleEngagementOpen,
+  handleEngagementReport,
   handleFindingStore,
   handleFindingSearch,
   handleCacheStats,
@@ -21,7 +22,7 @@ import { handleSemanticTriage } from "./cache.js";
 
 type AppContext = { Bindings: Env; Variables: Variables };
 
-/** MCP tool manifest — 9 tools matching spec §8. */
+/** MCP tool manifest — 11 tools. */
 const TOOL_MANIFEST = [
   {
     name: "engagement_open",
@@ -35,6 +36,20 @@ const TOOL_MANIFEST = [
         status: { type: "string", enum: ["active", "closed", "archived"], description: "Engagement status" },
       },
       required: ["name"],
+    },
+  },
+  {
+    name: "engagement_list",
+    description: "List all engagements. Optional status filter.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        status: {
+          type: "string",
+          enum: ["active", "closed", "archived"],
+          description: "Filter by engagement status (optional)",
+        },
+      },
     },
   },
   {
@@ -77,6 +92,7 @@ const TOOL_MANIFEST = [
         asset: { type: "string", description: "Affected host/URL/component" },
         external_id: { type: "string", description: "e.g. CVE-2026-1234" },
         metadata: { type: "object", description: "Additional metadata JSON" },
+        tags: { type: "array", items: { type: "string" }, description: "Tags for this finding" },
       },
       required: ["engagement_id", "kind", "title", "body"],
     },
@@ -112,12 +128,12 @@ const TOOL_MANIFEST = [
   },
   {
     name: "engagement_recall",
-    description: "Recall agent memories by engagement (recency or vector similarity).",
+    description: "Recall agent memories by engagement (recency or vector similarity). Pass query for semantic search.",
     inputSchema: {
       type: "object",
       properties: {
         engagement_id: { type: "string" },
-        query: { type: "string", description: "Required if vector_recall=true" },
+        query: { type: "string", description: "Optional — triggers vector similarity recall when provided" },
         session_id: { type: "string" },
         top_k: { type: "integer" },
         vector_recall: { type: "boolean", description: "Use vector similarity instead of recency" },
@@ -142,11 +158,24 @@ const TOOL_MANIFEST = [
   },
   {
     name: "cache_stats",
-    description: "Get semantic cache hit/miss stats for an engagement.",
+    description: "Get semantic cache hit/miss stats and severity rollup for an engagement.",
     inputSchema: {
       type: "object",
       properties: {
         engagement_id: { type: "string" },
+      },
+      required: ["engagement_id"],
+    },
+  },
+  {
+    name: "engagement_report",
+    description: "Full engagement export: all findings (paginated), severity+status rollups, recent memories, cache stats. Use for SOC report generation or cross-tool analysis.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        engagement_id: { type: "string" },
+        cursor: { type: "string", description: "Pagination cursor from a previous call's next_cursor" },
+        limit: { type: "integer", description: "Findings per page (default 200, max 500)" },
       },
       required: ["engagement_id"],
     },
@@ -211,6 +240,29 @@ async function dispatchTool(
     case "engagement_open":
       return extractJson(await handleEngagementOpen(args, env));
 
+    case "engagement_list": {
+      // #3: engagement_list MCP tool
+      const status = typeof args["status"] === "string" ? args["status"] : null;
+      let stmt: D1PreparedStatement;
+      if (status) {
+        stmt = env.DB.prepare(
+          `SELECT engagement_id, name, client, status, created_at
+           FROM engagements
+           WHERE deleted_at IS NULL AND status = ?
+           ORDER BY created_at DESC LIMIT 100`
+        ).bind(status);
+      } else {
+        stmt = env.DB.prepare(
+          `SELECT engagement_id, name, client, status, created_at
+           FROM engagements
+           WHERE deleted_at IS NULL
+           ORDER BY created_at DESC LIMIT 100`
+        );
+      }
+      const { results } = await stmt.all<Pick<EngagementRecord, "engagement_id" | "name" | "client" | "status" | "created_at">>();
+      return { engagements: results ?? [] };
+    }
+
     case "sec_cache_get": {
       const ns = String(args["ns"] ?? "");
       const key = String(args["key"] ?? "");
@@ -232,8 +284,14 @@ async function dispatchTool(
     case "engagement_remember":
       return extractJson(await handleRemember(args, env));
 
-    case "engagement_recall":
-      return extractJson(await handleRecall(args, env));
+    case "engagement_recall": {
+      // #4: pass query through — if present, vector_recall is implied
+      const recallArgs = { ...args };
+      if (typeof recallArgs["query"] === "string" && recallArgs["query"].length > 0) {
+        recallArgs["vector_recall"] = true;
+      }
+      return extractJson(await handleRecall(recallArgs, env));
+    }
 
     case "semantic_triage":
       return extractJson(await handleSemanticTriage(args, env));
@@ -241,6 +299,13 @@ async function dispatchTool(
     case "cache_stats": {
       const eid = typeof args["engagement_id"] === "string" ? args["engagement_id"] : null;
       return extractJson(await handleCacheStats(eid, env));
+    }
+
+    case "engagement_report": {
+      const eid = String(args["engagement_id"] ?? "");
+      const cur = typeof args["cursor"] === "string" ? args["cursor"] : null;
+      const lim = typeof args["limit"] === "number" ? args["limit"] : null;
+      return extractJson(await handleEngagementReport(eid, env, cur, lim));
     }
 
     default: {

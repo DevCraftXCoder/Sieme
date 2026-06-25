@@ -49,14 +49,9 @@ export async function handleKvSet(
   env: Env,
   c: Context<AppContext>
 ): Promise<Response> {
-  // Rate limit check
-  const rl = await env.SIEMEN_RATE_LIMITER.limit({ key: c.get("callerHash") });
-  if (!rl.success) {
-    return Response.json(
-      { error: "RATE_LIMIT_EXCEEDED", message: "Too many requests" },
-      { status: 429 }
-    );
-  }
+  // Rate limiting is handled by the global /v1/* middleware in index.ts.
+  // The Context parameter is retained for future per-handler needs.
+  void c; // suppress unused-variable warning
 
   if (!body || typeof body !== "object") {
     return Response.json({ error: "VALIDATION_ERROR", message: "Request body required" }, { status: 400 });

@@ -1,4 +1,4 @@
-// Memory handlers: engagement_remember, engagement_recall
+// Memory handlers: engagement_remember, engagement_recall, handleCrossEngagementRecall
 // Used by both REST routes (src/routes/memory.ts) and MCP tools/call (src/mcp.ts).
 // deleteByIds discipline: Vectorize delete must succeed before D1 delete.
 
@@ -82,6 +82,7 @@ export interface RecallBody {
  * Recall memories by engagement.
  * Vector recall: embed query → Vectorize similarity → JOIN D1.
  * Recency recall (default): D1 ORDER BY created_at DESC LIMIT top_k.
+ * Also handles #4: GET /v1/memory?engagement_id=UUID&query=text → vector recall.
  */
 export async function handleRecall(body: unknown, env: Env): Promise<Response> {
   if (!body || typeof body !== "object") {
@@ -147,6 +148,52 @@ export async function handleRecall(body: unknown, env: Env): Promise<Response> {
 
   const { results } = await stmt.all<Record<string, unknown>>();
   return Response.json({ memories: results ?? [] });
+}
+
+// ── cross-engagement memory search (#15) ──────────────────────────────────────
+
+/**
+ * Search Vectorize WITHOUT a namespace filter to find memories across all engagements.
+ * Admin-level operation — same Bearer auth as all other routes.
+ * Returns top-K memories with engagement_id included.
+ */
+export async function handleCrossEngagementRecall(
+  query: string,
+  topK: number,
+  env: Env
+): Promise<Response> {
+  if (!query || typeof query !== "string") {
+    return Response.json({ error: "VALIDATION_ERROR", message: "query is required" }, { status: 400 });
+  }
+
+  validateEmbedInput(query, "query");
+
+  const k = Math.min(topK, 10); // Hard cap at 10 for cross-engagement search
+  const vector = await embed(query, env);
+
+  // Query WITHOUT namespace filter — searches all namespaces
+  const matches = await env.VECTORIZE.query(vector, {
+    topK: k,
+    returnMetadata: "indexed",
+    filter: { kind: "memory" },
+  });
+
+  const memories: Array<Record<string, unknown>> = [];
+  for (const match of matches.matches ?? []) {
+    const meta = match.metadata as Record<string, unknown> | undefined;
+    const engagementId = typeof meta?.["engagement_id"] === "string" ? meta["engagement_id"] : null;
+    if (!engagementId) continue;
+
+    const row = await env.DB.prepare(
+      "SELECT * FROM memory WHERE memory_id = ? AND engagement_id = ?"
+    )
+      .bind(match.id, engagementId)
+      .first<Record<string, unknown>>();
+    if (!row) continue;
+    memories.push({ ...row, score: match.score, engagement_id: engagementId });
+  }
+
+  return Response.json({ memories, cross_engagement: true });
 }
 
 // ── deleteByIds discipline ────────────────────────────────────────────────────

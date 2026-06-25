@@ -49,6 +49,8 @@ export interface EngagementRecord {
   deleted_at: string | null;
 }
 
+export type FindingStatus = "open" | "accepted" | "remediated" | "false_positive";
+
 export interface FindingRecord {
   record_id: string;
   engagement_id: string;
@@ -56,11 +58,14 @@ export interface FindingRecord {
   title: string;
   body: string;
   severity: string | null;
+  status: FindingStatus;
   asset: string | null;
   external_id: string | null;
   metadata: string; // JSON
+  tags: string; // JSON
   vector_id: string;
   created_at: string;
+  deleted_at: string | null;
 }
 
 export interface MemoryRecord {
