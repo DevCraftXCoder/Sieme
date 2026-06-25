@@ -186,6 +186,12 @@ export interface FindingStoreBody {
   external_id?: string;
   metadata?: Record<string, unknown>;
   tags?: string[];
+  // SIC enrichment (migration-007) — all optional, backward compatible
+  cwe?: string;
+  owasp_category?: string;
+  cvss_v3?: number;
+  epss?: number;
+  kev?: number;
 }
 
 /**
@@ -245,6 +251,37 @@ export async function handleFindingStore(body: unknown, env: Env): Promise<Respo
     ? JSON.stringify(b["tags"].filter((t) => typeof t === "string"))
     : "[]";
 
+  // SIC enrichment (migration-007) — all optional, backward compatible.
+  // cwe / owasp_category: string or null
+  if (b["cwe"] !== undefined && b["cwe"] !== null && typeof b["cwe"] !== "string") {
+    return Response.json({ error: "VALIDATION_ERROR", message: "cwe must be a string or null" }, { status: 400 });
+  }
+  if (b["owasp_category"] !== undefined && b["owasp_category"] !== null && typeof b["owasp_category"] !== "string") {
+    return Response.json({ error: "VALIDATION_ERROR", message: "owasp_category must be a string or null" }, { status: 400 });
+  }
+  // cvss_v3: number 0–10 or null
+  if (
+    b["cvss_v3"] !== undefined &&
+    b["cvss_v3"] !== null &&
+    (typeof b["cvss_v3"] !== "number" || Number.isNaN(b["cvss_v3"]) || b["cvss_v3"] < 0 || b["cvss_v3"] > 10)
+  ) {
+    return Response.json({ error: "VALIDATION_ERROR", message: "cvss_v3 must be a number between 0 and 10, or null" }, { status: 400 });
+  }
+  // epss: number 0–1 or null
+  if (
+    b["epss"] !== undefined &&
+    b["epss"] !== null &&
+    (typeof b["epss"] !== "number" || Number.isNaN(b["epss"]) || b["epss"] < 0 || b["epss"] > 1)
+  ) {
+    return Response.json({ error: "VALIDATION_ERROR", message: "epss must be a number between 0 and 1, or null" }, { status: 400 });
+  }
+  const cwe = typeof b["cwe"] === "string" ? b["cwe"] : null;
+  const owaspCategory = typeof b["owasp_category"] === "string" ? b["owasp_category"] : null;
+  const cvssV3 = typeof b["cvss_v3"] === "number" ? b["cvss_v3"] : null;
+  const epss = typeof b["epss"] === "number" ? b["epss"] : null;
+  // kev coerced to 0/1 (truthy → 1)
+  const kev = b["kev"] ? 1 : 0;
+
   // Validate + embed the combined text (cap 2000 chars)
   const embedText = `${title} ${bodyText}`.slice(0, 2000);
   validateEmbedInput(embedText, "title+body");
@@ -268,10 +305,10 @@ export async function handleFindingStore(body: unknown, env: Env): Promise<Respo
   // D1 insert — catch UNIQUE constraint violation on external_id (#8)
   try {
     await env.DB.prepare(
-      `INSERT INTO findings (record_id, engagement_id, kind, title, body, severity, asset, external_id, metadata, tags, vector_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO findings (record_id, engagement_id, kind, title, body, severity, asset, external_id, metadata, tags, vector_id, created_at, cwe, owasp_category, cvss_v3, epss, kev)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-      .bind(recordId, engagementId, kind, title, bodyText, severity, asset, externalId, metadata, tags, recordId, ts)
+      .bind(recordId, engagementId, kind, title, bodyText, severity, asset, externalId, metadata, tags, recordId, ts, cwe, owaspCategory, cvssV3, epss, kev)
       .run();
   } catch (e) {
     const msg = (e as Error).message ?? "";
@@ -422,9 +459,45 @@ export async function handleFindingUpdate(
     setClauses.push("tags = ?");
     bindings.push(JSON.stringify((b["tags"] as unknown[]).filter((t) => typeof t === "string")));
   }
+  // Enforce ordered finding_status transitions (#5/Gap E).
+  // Allowed: open→accepted, open→remediated, accepted→remediated, any→false_positive.
+  // Terminal states (remediated, false_positive) cannot move back to open/accepted.
+  // Same-status PATCH is idempotent (no-op, allowed).
   if (b["finding_status"] !== undefined) {
+    const nextStatus = String(b["finding_status"]) as FindingStatus;
+
+    const current = await env.DB.prepare(
+      `SELECT finding_status FROM findings WHERE record_id = ? AND deleted_at IS NULL`
+    )
+      .bind(recordId)
+      .first<{ finding_status: string }>();
+
+    if (!current) {
+      return Response.json({ error: "NOT_FOUND", message: "Finding not found" }, { status: 404 });
+    }
+
+    const currentStatus = current.finding_status as FindingStatus;
+
+    // Allowed forward transitions per current state. Same-status is always allowed (idempotent).
+    const ALLOWED_TRANSITIONS: Record<FindingStatus, FindingStatus[]> = {
+      open: ["accepted", "remediated", "false_positive"],
+      accepted: ["remediated", "false_positive"],
+      remediated: ["false_positive"],
+      false_positive: [],
+    };
+
+    if (nextStatus !== currentStatus && !ALLOWED_TRANSITIONS[currentStatus].includes(nextStatus)) {
+      return Response.json(
+        {
+          error: "INVALID_TRANSITION",
+          message: `Illegal finding_status transition: ${currentStatus} → ${nextStatus}. Terminal states cannot move backward.`,
+        },
+        { status: 409 }
+      );
+    }
+
     setClauses.push("finding_status = ?");
-    bindings.push(String(b["finding_status"]));
+    bindings.push(nextStatus);
   }
 
   bindings.push(recordId);
@@ -731,8 +804,28 @@ export async function handleEngagementReport(
       if (r.finding_status in statusRollup) statusRollup[r.finding_status] = r.count;
     }
   } catch (e) {
-    // Column does not exist yet (migration-006 pending) — or a real query error post-migration
-    console.warn("[siemen] status_rollup query failed:", (e as Error).message);
+    // Column does not exist yet (migration-006 pending) — or a real query error post-migration.
+    // Logged at error level so a genuine post-migration failure is not silently masked.
+    console.error("[siemen] status_rollup query failed:", (e as Error).message);
+  }
+
+  // owasp_rollup — count by owasp_category (null-safe). Graceful degradation before
+  // migration-007 creates the owasp_category column.
+  const owaspRollup: Record<string, number> = {};
+  try {
+    const owaspRows = await env.DB.prepare(
+      `SELECT owasp_category, COUNT(*) AS count FROM findings
+       WHERE engagement_id = ? AND deleted_at IS NULL GROUP BY owasp_category`
+    )
+      .bind(engagementId)
+      .all<{ owasp_category: string | null; count: number }>();
+    for (const r of owaspRows.results ?? []) {
+      const key = r.owasp_category ?? "uncategorized";
+      owaspRollup[key] = (owaspRollup[key] ?? 0) + r.count;
+    }
+  } catch (e) {
+    // Column does not exist yet (migration-007 pending) — or a real query error post-migration.
+    console.error("[siemen] owasp_rollup query failed:", (e as Error).message);
   }
 
   const memories = (memoryRows.results ?? []).map((row) => {
@@ -749,6 +842,7 @@ export async function handleEngagementReport(
     next_cursor: nextCursor,
     severity_rollup: severityRollup,
     status_rollup: statusRollup,
+    owasp_rollup: owaspRollup,
     memories,
     cache_stats: {
       exact_hits: cacheRow?.exact_hits ?? 0,

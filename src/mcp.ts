@@ -14,6 +14,7 @@ import {
   handleEngagementOpen,
   handleEngagementReport,
   handleFindingStore,
+  handleFindingBatch,
   handleFindingSearch,
   handleCacheStats,
 } from "./handlers/findings.js";
@@ -22,7 +23,7 @@ import { handleSemanticTriage } from "./cache.js";
 
 type AppContext = { Bindings: Env; Variables: Variables };
 
-/** MCP tool manifest — 11 tools. */
+/** MCP tool manifest — 12 tools. */
 const TOOL_MANIFEST = [
   {
     name: "engagement_open",
@@ -95,6 +96,41 @@ const TOOL_MANIFEST = [
         tags: { type: "array", items: { type: "string" }, description: "Tags for this finding" },
       },
       required: ["engagement_id", "kind", "title", "body"],
+    },
+  },
+  {
+    name: "finding_batch",
+    description: "Batch ingest up to 100 findings/CVEs/controls in one call. Each item matches finding_store; a top-level engagement_id is inherited by items that omit it. Returns { stored, duplicates, errors }.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        engagement_id: { type: "string", description: "Default engagement_id inherited by items that omit it" },
+        findings: {
+          type: "array",
+          description: "Findings to ingest (max 100)",
+          items: {
+            type: "object",
+            properties: {
+              engagement_id: { type: "string" },
+              kind: { type: "string", enum: ["finding", "cve", "control"] },
+              title: { type: "string" },
+              body: { type: "string" },
+              severity: { type: "string", enum: ["critical", "high", "medium", "low", "info"] },
+              asset: { type: "string", description: "Affected host/URL/component" },
+              external_id: { type: "string", description: "e.g. CVE-2026-1234" },
+              metadata: { type: "object", description: "Additional metadata JSON" },
+              tags: { type: "array", items: { type: "string" } },
+              cwe: { type: "string", description: "e.g. CWE-89" },
+              owasp_category: { type: "string", description: "e.g. A03:2021-Injection" },
+              cvss_v3: { type: "number", description: "CVSS v3 base score (0–10)" },
+              epss: { type: "number", description: "EPSS probability (0–1)" },
+              kev: { type: "integer", description: "1 if in CISA KEV catalog, else 0" },
+            },
+            required: ["kind", "title", "body"],
+          },
+        },
+      },
+      required: ["findings"],
     },
   },
   {
@@ -277,6 +313,9 @@ async function dispatchTool(
 
     case "finding_store":
       return extractJson(await handleFindingStore(args, env));
+
+    case "finding_batch":
+      return extractJson(await handleFindingBatch(args, env));
 
     case "finding_search":
       return extractJson(await handleFindingSearch(args, env));

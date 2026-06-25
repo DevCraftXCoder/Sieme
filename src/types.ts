@@ -66,6 +66,12 @@ export interface FindingRecord {
   vector_id: string;
   created_at: string;
   deleted_at: string | null;
+  // SIC enrichment (migration-007)
+  cwe: string | null;
+  owasp_category: string | null;
+  cvss_v3: number | null;
+  epss: number | null;
+  kev: number;
 }
 
 export interface MemoryRecord {
